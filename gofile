@@ -1,0 +1,47 @@
+#!/bin/zsh
+
+url="$1"
+
+until [ ! -z "$url" ] ; do
+  read "url?url="
+done
+
+id=$(rev <<< "$url" | cut -d'/' -f1 | rev)
+
+token=$(curl -s 'https://api.gofile.io/createAccount' | jq -r '.data.token' 2>/dev/null)
+[ "$?" -ne 0 ] && echo "Creating guest account failed, please try again later"
+
+websiteToken=$(curl -s 'https://gofile.io/dist/js/alljs.js' | grep websiteToken | awk '{ print $3 }' | jq -r)
+[ "$?" -ne 0 ] && echo "Getting website token failed, please try again later"
+
+resp=$(curl 'https://api.gofile.io/getContent?contentId='"$id"'&token='"$token"'&websiteToken='"$websiteToken"'&cache=true' 2>/dev/null)
+code="$?"
+
+if [[ $(jq -r '.status' <<< "$resp" 2>/dev/null) ==  "error-passwordRequired" ]] ; then
+  until [ ! -z "$password" ] ; do
+    read "password?password="
+    password=$(printf "$password" | sha256sum | cut -d' ' -f1)
+
+    resp=$(curl 'https://api.gofile.io/getContent?contentId='"$id"'&token='"$token"'&websiteToken='"$websiteToken"'&cache=true&password='"$password" 2>/dev/null)
+    code="$?"
+  done
+fi
+
+[ "$code" -ne 0 ] && echo "URL unreachable, check provided link" && exit 1
+
+#mkdir "$id" 2>/dev/null
+#cd "$id"
+
+wget '--header=Cookie: accountToken='"$token" --delete-after "$url" -q -c -T 5 -t 1
+[ "$?" -ne 0 ] && echo "Fetching page failed, check provided link"
+
+for i in $(jq '.data.contents | keys | .[]' <<< "$resp"); do
+  filename=$(jq -r '.data.contents['"$i"'].name' <<< "$resp")
+  link=$(jq -r '.data.contents['"$i"'].link' <<< "$resp")
+
+  if [ ! -f "$filename" ] ; then
+    aria2c -x 10 '--header=Cookie: accountToken='"$token"  "$link"
+#    wget '--header=Cookie: accountToken='"$token" -O "$filename" "$link" -q --show-progress -c -T 5 -t 1
+    [ "$?" -ne 0 ] && echo "Downloading ""$filename"" failed, please try again later" && rm "$filename"
+  fi
+done
